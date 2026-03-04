@@ -30,6 +30,8 @@ interface EnvironmentInfo {
   isGitRepo: boolean;
   gitRemote: string | null;
   ownerRepo: string | null;
+  scmPlatform: "github" | "gitlab" | null;
+  scmHost: string | null;
   currentBranch: string | null;
   defaultBranch: string | null;
   hasTmux: boolean;
@@ -42,6 +44,7 @@ interface EnvironmentInfo {
 async function detectDefaultBranch(
   workingDir: string,
   ownerRepo: string | null,
+  scmPlatform: "github" | "gitlab" | null,
 ): Promise<string | null> {
   // Method 1: Try to get from git symbolic-ref (most reliable)
   const symbolicRef = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], workingDir);
@@ -53,8 +56,8 @@ async function detectDefaultBranch(
     }
   }
 
-  // Method 2: Try GitHub API via gh CLI
-  if (ownerRepo) {
+  // Method 2: Try GitHub API via gh CLI (GitHub repos only)
+  if (ownerRepo && scmPlatform === "github") {
     const ghResult = await gh([
       "repo",
       "view",
@@ -82,6 +85,43 @@ async function detectDefaultBranch(
   return "main";
 }
 
+function parseGitRemote(remote: string): {
+  ownerRepo: string | null;
+  host: string | null;
+  platform: "github" | "gitlab" | null;
+} {
+  const sshMatch = remote.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path = sshMatch[2].replace(/\/+$/, "");
+    const ownerRepo = path.includes("/") ? path : null;
+    const lower = host.toLowerCase();
+    const platform =
+      lower === "github.com" || lower.endsWith(".github.com")
+        ? "github"
+        : lower === "gitlab.com" || /(^|[.-])gitlab([.-]|$)/.test(lower)
+          ? "gitlab"
+          : null;
+    return { ownerRepo, host, platform };
+  }
+
+  try {
+    const parsed = new URL(remote);
+    const host = parsed.host;
+    const ownerRepo = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+    const lower = host.toLowerCase();
+    const platform =
+      lower === "github.com" || lower.endsWith(".github.com")
+        ? "github"
+        : lower === "gitlab.com" || /(^|[.-])gitlab([.-]|$)/.test(lower)
+          ? "gitlab"
+          : null;
+    return { ownerRepo: ownerRepo.includes("/") ? ownerRepo : null, host, platform };
+  } catch {
+    return { ownerRepo: null, host: null, platform: null };
+  }
+}
+
 async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
   // Check if in git repo
   const isGitRepo = (await git(["rev-parse", "--git-dir"], workingDir)) !== null;
@@ -89,17 +129,15 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
   // Get git remote
   let gitRemote: string | null = null;
   let ownerRepo: string | null = null;
+  let scmPlatform: "github" | "gitlab" | null = null;
+  let scmHost: string | null = null;
   if (isGitRepo) {
     gitRemote = await git(["remote", "get-url", "origin"], workingDir);
     if (gitRemote) {
-      // Parse owner/repo from remote
-      // Examples:
-      //   git@github.com:owner/repo.git
-      //   https://github.com/owner/repo.git
-      const match = gitRemote.match(/github\.com[:/]([^/]+\/[^/]+?)(\.git)?$/);
-      if (match) {
-        ownerRepo = match[1];
-      }
+      const parsed = parseGitRemote(gitRemote);
+      ownerRepo = parsed.ownerRepo;
+      scmPlatform = parsed.platform;
+      scmHost = parsed.host;
     }
   }
 
@@ -107,7 +145,9 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
   const currentBranch = isGitRepo ? await git(["branch", "--show-current"], workingDir) : null;
 
   // Detect the actual default branch (main/master/next)
-  const defaultBranch = isGitRepo ? await detectDefaultBranch(workingDir, ownerRepo) : null;
+  const defaultBranch = isGitRepo
+    ? await detectDefaultBranch(workingDir, ownerRepo, scmPlatform)
+    : null;
 
   // Check for tmux (direct invocation more portable than 'which')
   const hasTmux = (await execSilent("tmux", ["-V"])) !== null;
@@ -131,6 +171,8 @@ async function detectEnvironment(workingDir: string): Promise<EnvironmentInfo> {
     isGitRepo,
     gitRemote,
     ownerRepo,
+    scmPlatform,
+    scmHost,
     currentBranch,
     defaultBranch,
     hasTmux,
@@ -288,7 +330,7 @@ export function registerInit(program: Command): void {
 
         let projectPath = "";
         if (projectId) {
-          const repo = await prompt(rl, "GitHub repo (owner/repo)", env.ownerRepo || "");
+          const repo = await prompt(rl, "Repository (group/project)", env.ownerRepo || "");
           projectPath = await prompt(
             rl,
             "Local path to repo",
@@ -303,8 +345,8 @@ export function registerInit(program: Command): void {
           }
           const tracker = await prompt(
             rl,
-            "Tracker (github, linear, none)",
-            env.hasLinearKey ? "linear" : "github",
+            "Tracker (github, gitlab, linear, none)",
+            env.scmPlatform === "gitlab" ? "gitlab" : env.hasLinearKey ? "linear" : "github",
           );
 
           const projectConfig: Record<string, unknown> = {
@@ -314,6 +356,15 @@ export function registerInit(program: Command): void {
             path: projectPath,
             defaultBranch,
           };
+
+          const gitlabBaseUrl =
+            env.scmHost && env.scmPlatform === "gitlab"
+              ? `https://${env.scmHost}`
+              : process.env["GITLAB_BASE_URL"] ?? "https://gitlab.com";
+
+          if (env.scmPlatform === "gitlab") {
+            projectConfig.scm = { plugin: "gitlab", baseUrl: gitlabBaseUrl };
+          }
 
           if (tracker === "linear") {
             if (!env.hasLinearKey) {
@@ -326,6 +377,9 @@ export function registerInit(program: Command): void {
             if (teamId) {
               projectConfig.tracker = { plugin: "linear", teamId };
             }
+          } else if (tracker === "gitlab") {
+            projectConfig.tracker = { plugin: "gitlab", baseUrl: gitlabBaseUrl };
+            projectConfig.scm = { plugin: "gitlab", baseUrl: gitlabBaseUrl };
           } else if (tracker === "none") {
             // Don't add tracker config
           } else {
@@ -479,6 +533,22 @@ async function handleAutoMode(outputPath: string, smart: boolean): Promise<void>
         path,
         defaultBranch,
         agentRules,
+        ...(env.scmPlatform === "gitlab"
+          ? {
+              scm: {
+                plugin: "gitlab",
+                baseUrl: env.scmHost
+                  ? `https://${env.scmHost}`
+                  : process.env["GITLAB_BASE_URL"] ?? "https://gitlab.com",
+              },
+              tracker: {
+                plugin: "gitlab",
+                baseUrl: env.scmHost
+                  ? `https://${env.scmHost}`
+                  : process.env["GITLAB_BASE_URL"] ?? "https://gitlab.com",
+              },
+            }
+          : {}),
       },
     },
   };

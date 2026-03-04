@@ -86,6 +86,14 @@ describe("parseRepoUrl", () => {
     expect(result.ownerRepo).toBe("my-org/my-project");
   });
 
+  it("parses nested group URLs (GitLab subgroup)", () => {
+    const result = parseRepoUrl("https://gitlab.example.com/group/subgroup/my-project.git");
+    expect(result.host).toBe("gitlab.example.com");
+    expect(result.owner).toBe("group/subgroup");
+    expect(result.repo).toBe("my-project");
+    expect(result.ownerRepo).toBe("group/subgroup/my-project");
+  });
+
   it("parses Bitbucket URL", () => {
     const result = parseRepoUrl("https://bitbucket.org/team/repo");
     expect(result.host).toBe("bitbucket.org");
@@ -111,6 +119,10 @@ describe("detectScmPlatform", () => {
 
   it("detects GitLab", () => {
     expect(detectScmPlatform("gitlab.com")).toBe("gitlab");
+  });
+
+  it("detects self-hosted GitLab hostnames", () => {
+    expect(detectScmPlatform("gitlab.mycompany.internal")).toBe("gitlab");
   });
 
   it("detects Bitbucket", () => {
@@ -278,8 +290,24 @@ describe("generateConfigFromUrl", () => {
 
     const projects = config.projects as Record<string, Record<string, unknown>>;
     const project = projects["my-project"];
-    expect(project.scm).toEqual({ plugin: "gitlab" });
-    expect(project.tracker).toEqual({ plugin: "gitlab" });
+    expect(project.scm).toEqual({ plugin: "gitlab", baseUrl: "https://gitlab.com" });
+    expect(project.tracker).toEqual({ plugin: "gitlab", baseUrl: "https://gitlab.com" });
+  });
+
+  it("generates config for self-hosted GitLab repo", () => {
+    const parsed = parseRepoUrl("https://gitlab.mycompany.internal/team/app");
+    const config = generateConfigFromUrl({ parsed, repoPath: tmpDir });
+
+    const projects = config.projects as Record<string, Record<string, unknown>>;
+    const project = projects.app;
+    expect(project.scm).toEqual({
+      plugin: "gitlab",
+      baseUrl: "https://gitlab.mycompany.internal",
+    });
+    expect(project.tracker).toEqual({
+      plugin: "gitlab",
+      baseUrl: "https://gitlab.mycompany.internal",
+    });
   });
 
   it("falls back to github for unknown hosts", () => {

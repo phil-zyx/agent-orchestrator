@@ -16,9 +16,9 @@ import { generateSessionPrefix } from "./paths.js";
 
 /** Parsed repo URL components */
 export interface ParsedRepoUrl {
-  /** Full owner/repo string, e.g. "ComposioHQ/DevOS" */
+  /** Full namespace/repo string, e.g. "ComposioHQ/DevOS" or "group/subgroup/repo" */
   ownerRepo: string;
-  /** Owner/org, e.g. "ComposioHQ" */
+  /** Namespace without repo (owner/org/group path) */
   owner: string;
   /** Repo name, e.g. "DevOS" */
   repo: string;
@@ -47,34 +47,53 @@ export function isRepoUrl(arg: string): boolean {
  *   - Same patterns for GitLab, Bitbucket, etc.
  */
 export function parseRepoUrl(url: string): ParsedRepoUrl {
-  // SSH format: git@host:owner/repo.git
-  const sshMatch = url.match(/^git@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/);
+  // SSH format: git@host:namespace/repo.git
+  const sshMatch = url.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
   if (sshMatch) {
     const host = sshMatch[1];
-    const owner = sshMatch[2];
-    const repo = sshMatch[3];
+    const fullPath = sshMatch[2].replace(/\/+$/, "");
+    const segments = fullPath.split("/").filter(Boolean);
+    if (segments.length < 2) {
+      throw new Error(
+        `Could not parse repo URL: ${url}\n` +
+          `Expected format: https://github.com/owner/repo or git@github.com:owner/repo.git`,
+      );
+    }
+    const repo = segments[segments.length - 1];
+    const owner = segments.slice(0, -1).join("/");
+    const ownerRepo = `${owner}/${repo}`;
     return {
-      ownerRepo: `${owner}/${repo}`,
+      ownerRepo,
       owner,
       repo,
       host,
-      cloneUrl: `https://${host}/${owner}/${repo}.git`,
+      cloneUrl: `https://${host}/${ownerRepo}.git`,
     };
   }
 
-  // HTTPS format: https://host/owner/repo[.git]
-  const httpsMatch = url.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
-  if (httpsMatch) {
-    const host = httpsMatch[1];
-    const owner = httpsMatch[2];
-    const repo = httpsMatch[3];
-    return {
-      ownerRepo: `${owner}/${repo}`,
-      owner,
-      repo,
-      host,
-      cloneUrl: `https://${host}/${owner}/${repo}.git`,
-    };
+  // HTTPS format: https://host/namespace/repo[.git]
+  if (/^https?:\/\//.test(url)) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.host;
+      const path = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+      const segments = path.split("/").filter(Boolean);
+      if (segments.length < 2) {
+        throw new Error("invalid path");
+      }
+      const repo = segments[segments.length - 1];
+      const owner = segments.slice(0, -1).join("/");
+      const ownerRepo = `${owner}/${repo}`;
+      return {
+        ownerRepo,
+        owner,
+        repo,
+        host,
+        cloneUrl: `https://${host}/${ownerRepo}.git`,
+      };
+    } catch {
+      // Fall through to the generic parse error below.
+    }
   }
 
   throw new Error(
@@ -90,6 +109,8 @@ export function detectScmPlatform(host: string): ScmPlatform {
   const lower = host.toLowerCase();
   if (lower === "github.com" || lower.endsWith(".github.com")) return "github";
   if (lower === "gitlab.com" || lower.endsWith(".gitlab.com")) return "gitlab";
+  // Self-hosted GitLab domains are commonly named like gitlab.company.com.
+  if (/(^|[.-])gitlab([.-]|$)/.test(lower)) return "gitlab";
   if (
     lower === "bitbucket.org" ||
     lower.endsWith(".bitbucket.org") ||
@@ -213,15 +234,17 @@ export function generateConfigFromUrl(options: GenerateConfigOptions): Record<st
     sessionPrefix: prefix,
   };
 
-  // SCM plugin — always set explicitly so applyProjectDefaults doesn't override.
-  // For known platforms, use the matching plugin. For unknown hosts, default to github
-  // (best available option since it's the only fully implemented SCM plugin).
-  projectConfig.scm = { plugin: platform !== "unknown" ? platform : "github" };
-
-  // Tracker — same platform as SCM for known hosts, github as fallback
-  projectConfig.tracker = {
-    plugin: platform === "github" || platform === "gitlab" ? platform : "github",
-  };
+  // SCM + Tracker plugin selection.
+  // For GitLab, include baseUrl so self-hosted instances can resolve API endpoints.
+  if (platform === "gitlab") {
+    projectConfig.scm = { plugin: "gitlab", baseUrl: `https://${parsed.host}` };
+    projectConfig.tracker = { plugin: "gitlab", baseUrl: `https://${parsed.host}` };
+  } else {
+    // For known non-GitLab platforms use platform plugin, otherwise fallback to github.
+    projectConfig.scm = { plugin: platform !== "unknown" ? platform : "github" };
+    // Tracker: GitHub uses native tracker plugin; others fall back to github.
+    projectConfig.tracker = { plugin: "github" };
+  }
 
   // Post-create commands based on detected package manager (JS ecosystem only)
   const JS_PACKAGE_MANAGERS: Record<string, string> = {

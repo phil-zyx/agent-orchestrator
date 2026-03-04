@@ -93,8 +93,8 @@ Eight slots. Every abstraction is swappable.
 | Runtime | tmux | docker, k8s, process |
 | Agent | claude-code | codex, aider, opencode |
 | Workspace | worktree | clone |
-| Tracker | github | linear |
-| SCM | github | — |
+| Tracker | github | gitlab, linear |
+| SCM | github | gitlab |
 | Notifier | desktop | slack, composio, webhook |
 | Terminal | iterm2 | web |
 | Lifecycle | core | — |

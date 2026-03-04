@@ -21,6 +21,9 @@ async function runSpawnPreflight(config: OrchestratorConfig, projectId: string):
   if (project?.tracker?.plugin === "github") {
     await preflight.checkGhAuth();
   }
+  if (project?.tracker?.plugin === "gitlab") {
+    preflight.checkGitLabToken(project);
+  }
 }
 
 async function spawnSession(

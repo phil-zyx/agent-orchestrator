@@ -9,6 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { ProjectConfig } from "@composio/ao-core";
 import { isPortAvailable } from "./web-dir.js";
 import { exec } from "./shell.js";
 
@@ -73,9 +74,31 @@ async function checkGhAuth(): Promise<void> {
   }
 }
 
+/**
+ * Check that GitLab authentication is configured.
+ * Accepts either project-level `tracker.token` or environment variables.
+ */
+function checkGitLabToken(project: ProjectConfig): void {
+  const trackerConfig =
+    project.tracker && typeof project.tracker === "object"
+      ? (project.tracker as Record<string, unknown>)
+      : undefined;
+  const tokenFromConfig = trackerConfig?.["token"];
+  const tokenFromEnv =
+    process.env["GITLAB_TOKEN"] ?? process.env["GITLAB_API_TOKEN"] ?? process.env["GITLAB_PAT"];
+
+  if (typeof tokenFromConfig === "string" && tokenFromConfig.trim().length > 0) return;
+  if (tokenFromEnv && tokenFromEnv.trim().length > 0) return;
+
+  throw new Error(
+    "GitLab token is not configured. Set project.tracker.token or GITLAB_TOKEN environment variable.",
+  );
+}
+
 export const preflight = {
   checkPort,
   checkBuilt,
   checkTmux,
   checkGhAuth,
+  checkGitLabToken,
 };

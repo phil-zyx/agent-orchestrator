@@ -95,8 +95,8 @@ Loads plugins and provides access to them:
 - runtime-tmux, runtime-process
 - agent-claude-code, agent-codex, agent-aider, agent-opencode
 - workspace-worktree, workspace-clone
-- tracker-github, tracker-linear
-- scm-github
+- tracker-github, tracker-gitlab, tracker-linear
+- scm-github, scm-gitlab
 - notifier-desktop, notifier-slack, notifier-composio, notifier-webhook
 - terminal-iterm2, terminal-web
 

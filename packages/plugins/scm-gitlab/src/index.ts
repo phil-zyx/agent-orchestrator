@@ -7,6 +7,8 @@
  *   2) GITLAB_TOKEN / GITLAB_API_TOKEN / GITLAB_PAT
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   CI_STATUS,
   type PluginModule,
@@ -36,6 +38,26 @@ interface GitLabRequestOptions {
 interface GitLabCredentials {
   baseUrl: string;
   token: string;
+}
+
+const execFileAsync = promisify(execFile);
+
+function formatError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+
+  const parts: string[] = [];
+  let current: unknown = err;
+  while (current instanceof Error) {
+    const message = current.message.trim();
+    if (message && !parts.includes(message)) {
+      parts.push(message);
+    }
+    current = current.cause;
+  }
+
+  return parts.length > 0 ? parts.join(": ") : err.toString();
 }
 
 interface GitLabUser {
@@ -220,36 +242,61 @@ async function gitlabRequest<T>(
     }
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const method = options.method ?? "GET";
+  const statusMarker = "__AO_STATUS__:";
+  const args = [
+    "--silent",
+    "--show-error",
+    "--http1.1",
+    "--location",
+    "--request",
+    method,
+    "--header",
+    "Accept: application/json",
+    "--header",
+    `PRIVATE-TOKEN: ${creds.token}`,
+    "--write-out",
+    `${statusMarker}%{http_code}`,
+    url.toString(),
+  ];
+
+  if (options.body) {
+    args.splice(args.length - 3, 0, "--header", "Content-Type: application/json");
+    args.splice(args.length - 3, 0, "--data", JSON.stringify(options.body));
+  }
 
   try {
-    const response = await fetch(url, {
-      method: options.method ?? "GET",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "PRIVATE-TOKEN": creds.token,
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: controller.signal,
+    const { stdout } = await execFileAsync("curl", args, {
+      timeout: 30_000,
+      maxBuffer: 10 * 1024 * 1024,
     });
 
-    const text = await response.text();
-    if (!response.ok) {
+    const markerIndex = stdout.lastIndexOf(statusMarker);
+    if (markerIndex === -1) {
+      throw new Error("curl response missing status marker");
+    }
+
+    const text = stdout.slice(0, markerIndex);
+    const status = Number.parseInt(stdout.slice(markerIndex + statusMarker.length).trim(), 10);
+
+    if (!Number.isFinite(status)) {
+      throw new Error("curl response contained invalid HTTP status");
+    }
+    if (status < 200 || status >= 300) {
       throw new Error(
-        `GitLab API ${options.method ?? "GET"} ${path} failed (${response.status}): ${text.slice(0, 300)}`,
+        `GitLab API ${method} ${path} failed (${status}): ${text.slice(0, 300)}`,
       );
     }
     if (!text) return undefined as T;
     return JSON.parse(text) as T;
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (err instanceof Error && err.message.includes("timed out")) {
       throw new Error(`GitLab API request timed out after 30s (${path})`);
     }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
+    throw new Error(
+      `GitLab API ${method} ${url.pathname} failed: ${formatError(err)}`,
+      { cause: err },
+    );
   }
 }
 

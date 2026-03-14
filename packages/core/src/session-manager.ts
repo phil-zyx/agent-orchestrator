@@ -84,6 +84,24 @@ function safeJsonParse<T>(str: string): T | null {
   }
 }
 
+function formatError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+
+  const parts: string[] = [];
+  let current: unknown = err;
+  while (current instanceof Error) {
+    const message = current.message.trim();
+    if (message && !parts.includes(message)) {
+      parts.push(message);
+    }
+    current = current.cause;
+  }
+
+  return parts.length > 0 ? parts.join(": ") : err.toString();
+}
+
 /** Valid session statuses for validation. */
 const VALID_STATUSES: ReadonlySet<string> = new Set([
   "spawning",
@@ -350,7 +368,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // Branch will be generated as feat/{issueId} (line 329-331)
         } else {
           // Other error (auth, network, etc) - fail fast
-          throw new Error(`Failed to fetch issue ${spawnConfig.issueId}: ${err}`, { cause: err });
+          throw new Error(`Failed to fetch issue ${spawnConfig.issueId}: ${formatError(err)}`, {
+            cause: err,
+          });
         }
       }
     }

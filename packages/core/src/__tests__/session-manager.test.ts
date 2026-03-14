@@ -533,6 +533,39 @@ describe("spawn", () => {
     expect(mockRuntime.create).not.toHaveBeenCalled();
   });
 
+  it("includes nested tracker error causes in spawn failures", async () => {
+    const lowLevel = new Error("self-signed certificate in certificate chain");
+    const fetchError = new TypeError("fetch failed", { cause: lowLevel });
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn().mockRejectedValue(fetchError),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue(""),
+      branchName: vi.fn().mockReturnValue("feat/8"),
+      generatePrompt: vi.fn().mockResolvedValue(""),
+    };
+
+    const registryWithTracker: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const sm = createSessionManager({
+      config,
+      registry: registryWithTracker,
+    });
+
+    await expect(sm.spawn({ projectId: "my-app", issueId: "8" })).rejects.toThrow(
+      "Failed to fetch issue 8: fetch failed: self-signed certificate in certificate chain",
+    );
+  });
+
   it("spawns without issue tracking when no issueId provided", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
 
